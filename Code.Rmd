@@ -1,0 +1,709 @@
+---
+title: "glmnet project"
+author: "zyq lxm"
+date: "2021/1/10"
+output: html_document
+---
+
+```{r}
+library("glmnet")
+library("MASS")
+library("tableone")
+library("readr")
+library(dplyr)
+library("ggplot2")
+```
+
+```{r,warning=FALSE}
+oracle<-function(b,b0,e){
+  return(t(as.matrix(b-b0))%*%e%*%as.matrix(b-b0))
+} 
+```
+
+## 3.2.Gaussian Family
+
+### Part 2A Codes for several models of Gaussian family
+
+**Data set for Gaussian Family**
+
+```{r}
+model1 <- function(n=100,m=50){
+  sigma <- diag(m)
+  for (i in 1:m){
+    for (j in 1:m){
+      sigma[[i,j]] <- 0.5^(abs(i-j))
+    }
+  }
+  x <- matrix(mvrnorm(n,rep(0,m),sigma),nrow = n, byrow = T)
+  c <- c(rep(1,10),rep(2,5),rep(0,35))
+  y <- x%*%as.matrix(c)+rnorm(n,)
+  y1 <- x%*%as.matrix(c)
+  return(list(x,y,y1))
+}
+```
+
+```{r warning=FALSE, include=FALSE}
+#oracle的预处理
+mm<-list()
+for(i in 1:20){
+  mm1<-model1()[[1]]
+  mm1 <- scale(mm1,center = T)
+  mm[[i]]<-t(mm1)%*%mm1/100
+}
+d<-dim(mm[[1]])[1]
+m0<-matrix(rep(0,d*d),nrow=d)
+for(i in 1:20){
+  m0<-m0+mm[[i]]
+}
+em<-m0/20 #E(X'X)
+b00<-c(rep(1,10),rep(2,5),rep(0,35))
+```
+
+#### 2.1 lasso
+```{r}
+set.seed(1)
+iter1 <- vector()
+error1 <- vector()
+nonz1 <- vector()
+si1 <- vector()
+t <- vector()
+for(i in 1:200){
+  p <- proc.time()[1]
+  mo <- model1()
+  x <- mo[[1]]
+  y <- mo[[2]]
+  x1 <- scale(x,center = T)
+  cvfit <- cv.glmnet(x,y,alpha = 1, type.measure = "mse",nfolds = 10)
+  iter1[i] <- length(cvfit$lambda)
+  b <- coef(cvfit, s = 0.045)[-1]
+  error1[i] <- oracle(b,b00,em)
+  nonz1[i] <- dim(predict(cvfit,x,type="nonzero",s=0.045))[1]
+  si1[i] <- cvfit$lambda.min
+  t[i] <- proc.time()[1]-p
+}
+```
+
+```{r}
+oa <- data.frame(iter = iter1,error=error1,time_ms= t*1000, nonz = nonz1, s = si1, method = "lasso(cross validation)")
+```
+
+#### 2.2 Ridge
+```{r}
+set.seed(1)
+iter2 <- vector()
+error2 <- vector()
+nonz2 <- vector()
+si2 <- vector()
+t2 <- vector()
+for(i in 1:200){
+  p <- proc.time()[1]
+  mo <- model1()
+  x <- mo[[1]]
+  y <- mo[[2]]
+  x1 <- scale(x,center = T)
+  cvfit2 <- cv.glmnet(x,y,alpha = 0, nfolds = 10)
+  iter2[i] <- length(cvfit$lambda)
+  b <- coef(cvfit2, s = 0.16)[-1]
+  error2[i] <- oracle(b,b00,em)
+  nonz2[i] <- dim(predict(cvfit2,x,type="nonzero",s= 0.16))[1]
+  si2[i] <- cvfit2$lambda.min
+  t2[i] <- proc.time()[1]-p
+}
+
+```
+
+```{r}
+ob <- data.frame(iter = iter2,error=error2,time_ms = t2*1000, nonz = nonz2, s = si2, method = "ridge(cross validation)")
+```
+
+#### 2.3 fls
+```{r}
+error3 <- vector()
+t3 <- vector()
+for (i in 1:200) {
+  p <- proc.time()
+  mo <- model1()
+  x <- mo[[1]]
+  y <- mo[[2]]
+  lmf <- lsfit(x,y)
+  b <- coef(lmf)[-1]
+  error3[i] <- oracle(b,b00,em)
+  t3[i] <- proc.time()[1]-p[1]
+}
+
+```
+
+```{r}
+ol <- data.frame(error=error3,time_ms = t3*1000, method = "fls", nonz = NA, iter = NA, s = NA)
+```
+
+#### 2.4 Garrotte
+```{r,warning=FALSE}
+ggarrotte <- function(x,y,b){
+  #step 1
+  rr <- list()
+  dd <- list()
+  J <- dim(x)[2]
+  d <- rep(0,J)
+  beta <- rep(0,J)
+  bb <- list()
+  r <- y
+  rr[[1]] <- y
+  bb[[1]] <- b*d
+  dd[[1]] <-d
+  iter <- 1
+  for (j in 1:J) {
+    z[,j] <-x[,j]*b[j]
+  }
+  aj <- vector()
+   #calculate z
+  
+  #step 2
+  c <- rep(0,J)
+  i <- rep(0,J)
+  for(j in 1:J){
+    c[j]<-t(z[,j])%*%r
+  }
+  i[which(c==max(c))]<-1  #Ck: active recorded as 1
+  
+  # step 3
+  gk <- matrix(rep(0,J),nrow = J)
+  a <-0
+  while(a!=1){
+    gk[which(i==1),] <- ginv(t(z[,which(i==1)])%*%z[,which(i==1)])%*%t(z[,which(i==1)])%*%r
+    gk[which(i==0),] <- 0
+    
+  #step4:
+    al=rep(0,J)  #alpha j
+  for(j in which(i==0)){
+    j1 <- which(i==1)[1]
+    p1 <- t(z[,j])%*%z%*%gk-t(z[,j1])%*%z%*%gk
+    p2 <- t(z[,j])%*%r-t(z[,j1])%*%r
+    al[j] <-p2/p1
+  }
+    
+  #step5:
+  for (j in which(i==1)) {
+    beta[j] <- -d[j]/gk[j]
+    al[j] <- min(beta[j],1)
+  }
+    
+  #step6:
+  if(max(al)<=0){
+    a <- 1
+  }else if(min(al[al>0])>1){
+    a <- 1
+  }else{
+    a <- min(al[al>0])
+    aj <- which(al==a)  #j*
+  }
+  d <- d+a*gk
+  dd[[iter+1]] <- d
+  bb[[iter+1]] <- b*d
+  for (j in aj) {
+    if(i[j]!=1){
+      i[j]<-1
+    }else{
+      i[j]<-0
+    }
+  }
+  
+  #step 7
+  r <- y-z%*%d
+  iter <- iter+1
+  rr[[iter]] <- r
+  }
+  return(list(rr,dd,d,bb))
+}
+
+```
+
+### Part2B several tests of 3.2
+
+**Figure 1**
+
+
+```{r warning=FALSE}
+t11 <- vector()
+t21 <- vector()
+me <- vector()
+it <- vector()
+num <- vector()
+set.seed(1)
+for (j in 1:200) {
+  t11[j]<- proc.time()
+  mo <- model1()
+  z1 <- mo[[1]]
+  y1 <- mo[[2]]
+  z2 <- z1-t(matrix(rep(apply(z1,2,mean),100),ncol = 100))
+  y2 <- y1-mean(y1)
+  z <- qr.Q(qr(z2))
+  r <- qr.R(qr(z2))
+  b1 <- ginv(t(z)%*%z)%*%(t(z)%*%y2)
+  grou <- ggarrotte(z,y2,b1)
+  rr <- grou[[1]]
+  dd <- grou[[2]]
+  bb <- grou[[4]]
+  bb1 <- lapply(bb, function(x)ginv(r)%*%x)
+  s <- sapply(bb1,function(x)oracle(b00,x,em))
+  iter3 <- length(bb)-1
+  me[j] <- min(s)
+  it[j] <- which(s==me[j])
+  num[j] <- length(which(dd[[it[j]]]!=0))
+  t21[j]<- proc.time()
+}
+```
+
+```{r}
+od <- data.frame(error = me, nonz = num, time_ms = (t21[1]-t11[1])*1000, iter = iter3, method = "garrotte", s = NA)
+```
+
+
+
+
+
+
+```{r warning=FALSE}
+vars <- c("iter","error","nonz","time_ms","s")
+tableone_groups <- CreateTableOne(vars = vars,strata = "method",data = rbind(oa,ob,ol,od))
+tableone_groups
+```
+**Figure 2**
+
+```{r}
+iterr <- vector()
+set.seed(1)
+mo <- model1()
+x <- mo[[1]]
+y <- mo[[2]]
+for(k in 1:10){
+glmnet.control(fdev = exp(-k))
+iterr[k] <- length(glmnet(x,y,alpha = 1)$df)
+}
+plot(iterr,-(1:10),type = "l",xlab="iteration",ylab = "k",col = "blue")
+```
+
+## 3.3. Multi-Gaussian Family
+
+### Part3A codes for Group lasso
+
+
+```{r}
+library(MASS)
+center<-function(x){
+  return(x-t(matrix(rep(apply(x,2,mean),nrow(x)),ncol=nrow(x))))
+}
+
+pj <- function(p,j){#根据数据以矩阵形式存储，定义函数pj将组变量维数转化成对应矩阵的列
+  if(j==1){
+    return(1:p[1])
+  }else{
+    return((sum(p[1:j-1])+1):sum(p[1:j]))
+  }
+}
+
+max0<-function(x){
+  return(max(x,0))
+}
+
+ortho<-function(x){
+  J<-length(x)
+  R<-lapply(x,function(x) qr.R(qr(x)))
+  x<-lapply(x,function(x) qr.Q(qr(x)))
+  return(list(x,R))
+}
+
+rescale_beta<-function(b,R){
+  for(i in 1:length(R)){
+  b[[i]]<-ginv(R[[i]])%*%b[[i]]
+  }
+  return(b)
+}
+
+knorm<-function(x){
+  return(sqrt(sum(x^2)))
+}
+```
+
+```{r}
+group_lasso<-function(X,Y,lambda=0.1,eps=0.01){
+  iteration<-5000
+  R<-ortho(X)[[2]]
+  X<-ortho(X)[[1]]
+  J<-length(X)
+  n<-length(Y)
+  P<-sapply(1:J,function(i) dim(X[[i]])[2])
+  beta<-list()
+  rebeta<-list()
+  beta_repath<-list()
+  beta_path<-list()
+  s<-list()
+  beta0<-list()
+  for(j in 1:J){
+    beta0[[j]]<-matrix(0,nrow=P[j],ncol=1)
+  }
+  iter<-0
+  beta<-beta0
+  while(iter<iteration){
+    for(j in 1:J){
+      beta0<-beta
+      XB<-matrix(0,nrow=n,ncol=1)
+      for(i in 1:J){
+        XB<-XB+X[[i]]%*%beta0[[i]]
+      }
+     s[[j]]<-t(X[[j]])%*%(Y-(XB-X[[j]]%*%beta0[[j]]))
+      snorm<-knorm(s[[j]])
+      beta[[j]]<-max0(1-lambda*sqrt(P[j])/snorm)*s[[j]]
+      iter<-iter+1
+      beta_repath[[iter]]<-rescale_beta(beta,R)
+      beta_path[[iter]]<-beta
+      #print(sum(sapply(1:J,function(j)abs(knorm(beta[[j]]-beta0[[j]])))))
+      if(sum(sapply(1:J,function(j)abs(knorm(beta[[j]]-beta0[[j]]))))<eps){
+        break
+      }
+    }
+    if(sum(sapply(1:J,function(j)abs(knorm(beta[[j]]-beta0[[j]]))))<eps){
+        break
+      }
+  }
+  rebeta<-rescale_beta(beta,R)
+  return(list("iter"=iter,"beta"=beta,"rebeta"=matrix(unlist(rebeta))/5,"beta_path"=beta_path,"beta_repath"=beta_repath))
+}
+```
+
+### Part3B several tests of 3.3
+
+**Figure 3**
+
+```{r}
+library(glmnet)
+data(MultiGaussianExample)
+times <- 200
+time <- vector(length=times)
+iter <- vector(length=times)
+error <- vector(length=times)
+glmnet.control(fdev = 1e-05)
+for (i in 1:times){
+start <- Sys.time()
+cvmfit <- cv.glmnet(x,y,family="mgaussian")
+end <- Sys.time()
+time[i] <- end-start
+ff <- predict(cvmfit,newx=x,s="lambda.min")
+mfit <- glmnet(x,y,family="mgaussian")
+iter[i]<-length(mfit$df)
+error[i]<-mean(colMeans((y-ff[,,1])^2))
+}
+
+a <- matrix(c(mean(iter),sd(iter),mean(error),sd(error),mean(time),sd(time)),nrow=2)
+colnames(a) <- c("iter","mean-squared error","time")
+rownames(a) <- c("mean","sd")
+a
+
+```
+
+#### 3.1 tests on MultiGaussianExample
+
+**Figure 4**
+
+
+```{r}
+data(MultiGaussianExample)
+iterr <- vector(length=8)
+for(k in 1:8){
+glmnet.control(fdev = 10^(-k))
+iterr[k] <- length(glmnet(x,y,family = "mgaussian")$df)
+}
+plot(iterr,-(1:8),type = "l",xlab="iteration",ylab = "log(precision)",xlim = c(0,100),ylim = c(-8,-1))
+
+```
+
+#### 3.2 test on birthwt dataset
+
+```{r}
+data(birthwt)
+n <- dim(birthwt)[1]
+inds <- sample(rep(1:4,length=n))
+p <- c(3,3,3,2,4,2,2,5)
+z <- matrix(rep(0,sum(p)*n),nrow = n)
+z[,1] <- birthwt[,2]
+z[,2] <- birthwt[,2]^2
+z[,3] <- birthwt[,2]^3
+z[,4] <- birthwt[,3]
+z[,5] <- birthwt[,3]^2
+z[,6] <- birthwt[,3]^3
+for (j in 1:n) {
+  if(birthwt[j,4]==1){
+    z[j,7]<-1
+    z[j,8]<-0
+    z[j,9]<-0
+  }
+  if(birthwt[j,4]==2){
+    z[j,7]<-0
+    z[j,8]<-1
+    z[j,9]<-0
+  }
+  if(birthwt[j,4]==3){
+    z[j,7]<-0
+    z[j,8]<-0
+    z[j,9]<-1
+  }
+  if(birthwt[j,5]==0){
+    z[j,10]<-1
+    z[j,11]<-0
+  }
+  if(birthwt[j,5]==1){
+    z[j,10]<-0
+    z[j,11]<-1
+  }
+  if(birthwt[j,6]==0){
+    z[j,12]<-1
+    z[j,13]<-0
+    z[j,14]<-0
+    z[j,15]<-0
+  }
+  if(birthwt[j,6]==1){
+    z[j,12]<-0
+    z[j,13]<-1
+    z[j,14]<-0
+    z[j,15]<-0
+  }
+  if(birthwt[j,6]==2){
+    z[j,12]<-0
+    z[j,13]<-0
+    z[j,14]<-1
+    z[j,15]<-0
+  }
+  if(birthwt[j,6]>2){
+    z[j,12]<-0
+    z[j,13]<-0
+    z[j,14]<-0
+    z[j,15]<-1
+  }
+  if(birthwt[j,7]==0){
+    z[j,16]<-1
+    z[j,17]<-0
+  }
+  if(birthwt[j,7]==1){
+    z[j,16]<-0
+    z[j,17]<-1
+  }
+  if(birthwt[j,8]==0){
+    z[j,18]<-1
+    z[j,19]<-0
+  }
+  if(birthwt[j,8]==1){
+    z[j,18]<-0
+    z[j,19]<-1
+  }
+  if(birthwt[j,9]==0){
+    z[j,20]<-1
+    z[j,21]<-0
+    z[j,22]<-0
+    z[j,23]<-0
+    z[j,24]<-0
+  }
+  if(birthwt[j,9]==1){
+    z[j,20]<-0
+    z[j,21]<-1
+    z[j,22]<-0
+    z[j,23]<-0
+    z[j,24]<-0
+  }
+  if(birthwt[j,9]==2){
+    z[j,20]<-0
+    z[j,21]<-0
+    z[j,22]<-1
+    z[j,23]<-0
+    z[j,24]<-0
+  }
+  if(birthwt[j,9]==3){
+    z[j,20]<-0
+    z[j,21]<-0
+    z[j,22]<-0
+    z[j,23]<-1
+    z[j,24]<-0
+  }
+  if(birthwt[j,9]>3){
+    z[j,20]<-0
+    z[j,21]<-0
+    z[j,22]<-0
+    z[j,23]<-0
+    z[j,24]<-1
+  }
+}
+
+da.tr <- z[inds!=1,]
+da.te <- z[inds==1,]
+dda.tr <- center(z[inds!=1,])
+dda.te <- center(z[inds==1,])
+dy.tr<-birthwt[inds!=1,10]
+dy.te<-birthwt[inds==1,10]
+```
+
+```{r}
+
+xx<-list()
+#zc<-center(z)
+for(i in 1:length(p)){
+  xx[[i]]<-dda.tr[,pj(p,i)]
+}
+#yy<-birthwt[,10]
+yc<-center(matrix(dy.tr))
+```
+
+```{r}
+gtimes <- 100
+gtime <- vector(length=btimes)
+giter <- vector(length=btimes)
+gerror <- vector(length=btimes)
+for (i in 1:gtimes){
+start <- Sys.time()
+gg<-group_lasso(xx,yc,lambda=50.55,eps = 1e-5)
+end<-Sys.time()
+gtime[i]<-end-start
+giter[i]<-gg$iter
+gerror[i]<-mean((da.te%*%group_lasso(xx,yc,lambda=50.55,eps = 1e-5)$rebeta-dy.te)^2)
+}
+
+```
+
+
+```{r}
+btimes <- 100
+btime <- vector(length=btimes)
+biter <- vector(length=btimes)
+berror <- vector(length=btimes)
+for (i in 1:btimes){
+start <- Sys.time()
+cvmfit <- cv.glmnet(da.tr,dy.tr)
+end <- Sys.time()
+btime[i] <- end-start
+ff <- predict(cvmfit,newx=da.te,s="lambda.min")
+mfit <- glmnet(da.tr,dy.tr,nlambda = 800)
+biter[i]<-length(mfit$df)
+berror[i]<-mean(colMeans((dy.te-ff)^2))
+}
+```
+
+```{r}
+gg<-data.frame(iter=giter,prediction.error=gerror,time=gtime,method="group_lasso")
+bb<-data.frame(iter=biter,prediction.error=berror,time=btime,method="glmnet")
+```
+
+**Figure5**
+
+```{r}
+library("tableone")
+vars <- c("iter","prediction.error","time")
+b <- CreateTableOne(vars = vars,strata = "method",data = rbind(gg,bb))
+b
+```
+
+
+## 3.4. logistic family
+```{r warning=FALSE}
+mnist_raw <- read.csv("mnist_train.csv")
+mnist_test<-read.csv("mnist_test.csv")
+```
+
+```{r}
+p <- vector()
+t5 <- vector()
+X_test<-as.matrix(mnist_test)
+test_label<-X_test[,1]
+X_t<-X_test[,2:785]
+per3 <- vector()
+iterz <- vector()
+ti <- vectoe()
+for (j in 1:10) {
+  p <- proc.time()[1]
+  glmnet.control(fdev = exp(-j))
+  fit=glmnet(X[1:3000,],label[1:3000],family="multinomial",type.multinomial = "group",alpha = 1)
+  iterz[j] <- length(fit$df)
+  l=predict(fit,newx=X_t,s=0.0032,x=X[1:3000,],y=label[1:3000],type="class")
+  per3[j] <- sum(as.numeric(l==test_label))/10000
+  ti[j] <- proc.time()[1]-p
+}
+```
+
+**Figure 10**
+
+```{r}
+plot(iterz,per3,type = "l",col = "blue",xlab = "iteration", ylab = "accuracy")
+```
+**Figure 11 and Figure 12**
+
+```{r}
+p <- vector()
+t5 <- vector()
+X_test<-as.matrix(mnist_test)
+test_label<-X_test[,1]
+X_t<-X_test[,2:785]
+l <- vector()
+per <- vector()
+for (j in 1:10) {
+  p <- proc.time()[1]
+  X<-mnist_raw[,2:785]
+  X<-as.matrix(X)
+  label<-mnist_raw[,1]
+  label<-as.matrix(label)
+  fit=glmnet(X[1:(300*j),],label[1:(300*j)],family="multinomial",type.multinomial = "group",nlambda = 100)
+  l=predict(fit,newx=X_t,s=0.0032,type="class")
+  per[j] <- sum(as.numeric(l==test_label))/10000
+  t5[j] <- proc.time()[1]-p
+}
+
+```
+
+```{r}
+X<-mnist_raw[,2:785]
+X<-as.matrix(X)
+label<-mnist_raw[,1]
+label<-as.matrix(label)
+for (j in 2:4) {
+  p <- proc.time()[1]
+  fittt=glmnet(X[1:(2000*j),],label[1:(2000*j)],family="multinomial",type.multinomial = "group",nlambda = 100)
+  l=predict(fittt,newx=X_t,s=0.0032,type="class")
+  per[9+j] <- sum(as.numeric(l==test_label))/10000
+  t5[9+j] <- proc.time()[1]-p
+}
+```
+```{r}
+p <- proc.time()[1]
+fittt=glmnet(X[1:10000,],label[1:10000],family="multinomial",type.multinomial = "group",nlambda = 100)
+l=predict(fittt,newx=X_t,s=0.0032,type="class")
+per[14] <- sum(as.numeric(l==test_label))/10000
+t5[14] <- proc.time()[1]-p
+```
+
+```{r}
+sp <- data.frame(samplesize = c((1:10)*300,(2:5)*2000), time_s = t5, accuracy = per)
+```
+
+```{r}
+plot(sp$samplesize,sp$accuracy,type = "l",col = "blue", xlab = "size of training set", ylab = "accuracy")
+plot(sp$samplesize,sp$time_s,type = "l",col = "blue", xlab = "size of training set", ylab ="time(s)")
+```
+
+**Figure 7**
+
+```{r}
+fit=glmnet(X[1:3000,],label[1:3000],family="multinomial",type.multinomial = "group",nlambda = 100)
+```
+
+```{r}
+per2 <- vector()
+for (j in 1:10) {
+  l=predict(fit,newx=X_t,s=fit$lambda[10*j],type="class")
+  per2[j] <- sum(as.numeric(l==test_label))/10000
+}
+```
+
+```{r}
+plot(fit$lambda[(1:10)*10],per2,type = "l",col = "blue", xlab = "lambda", ylab = "accuracy")
+```
+
+
+
+
+
